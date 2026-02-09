@@ -16,6 +16,10 @@ angle_offset = None
 raw_angle = 0
 calib_timer = 0
 
+# Smoothing variables
+smoothed_steering = 0
+SMOOTHING_FACTOR = 0.2 # 0.1 = very slow/smooth, 1.0 = instant/raw
+
 # Gets Video Input
 capture = cv2.VideoCapture(0)
 
@@ -100,15 +104,18 @@ while True:
             
             if final_angle > 180: final_angle -= 360
             if final_angle < -180: final_angle += 360
-            current_steering_angle = final_angle
-
-            steering_val = np.clip(current_steering_angle / config.MAX_STEER_ANGLE, -1.0, 1.0)
+            
+            # 1. DEADZONE: Make straight-ahead driving easier
+            target_steer = np.clip(final_angle / config.MAX_STEER_ANGLE, -1.0, 1.0)
+            if abs(target_steer) < 0.05: target_steer = 0
+            
+            # 2. SMOOTHING: Prevent jittery movements
+            smoothed_steering = (target_steer * SMOOTHING_FACTOR) + (smoothed_steering * (1 - SMOOTHING_FACTOR))
+            steering_val = smoothed_steering
         else:
-            # Reset to center if one or both hands are lost
-            steering_val = 0.0
-    else:
-        # Reset to center if no hands are detected
-        steering_val = 0.0
+            # Gradually return to center if hands are lost
+            steering_val = steering_val * 0.8
+            if abs(steering_val) < 0.01: steering_val = 0
 
     # Always update gamepad state
     gamepad.left_joystick_float(x_value_float=float(steering_val), y_value_float=0.0)
@@ -116,12 +123,45 @@ while True:
     gamepad.left_trigger_float(value_float=float(brake_val))
     gamepad.update()
 
-    # Visual Steering Bar
-    bar_x = int(320 + steering_val * 200)
-    cv2.line(frame, (320, 400), (bar_x, 400), (0, 255, 0), 10)
-    cv2.circle(frame, (320, 400), 5, (255, 255, 255), -1)
+    # --- ADVANCED RACING UI ---
+    
+    # 1. Background Overlay (Bottom Dashboard)
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 380), (640, 480), (20, 20, 20), -1)
+    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
 
-    # Calibration Countdown Logic
+    # 2. Steering Arc Gauge
+    center_x, center_y = 320, 430
+    cv2.ellipse(frame, (center_x, center_y), (100, 100), 0, 180, 360, (50, 50, 50), 2) # Background
+    # Draw Active Arc
+    steer_angle = steering_val * 90 
+    end_angle = 270 + steer_angle
+    cv2.ellipse(frame, (center_x, center_y), (100, 100), 0, 270, end_angle, (0, 255, 255), 10)
+    cv2.putText(frame, "STEER", (center_x-25, center_y+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+    # 3. Throttle & Brake Vertical "LED" Bars
+    # Throttle (Right)
+    cv2.rectangle(frame, (580, 200), (600, 350), (30, 30, 30), -1) # Background
+    th_h = int(throttle_val * 150)
+    cv2.rectangle(frame, (580, 350 - th_h), (600, 350), (0, 255, 0), -1)
+    cv2.putText(frame, "GAS", (575, 370), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+
+    # Brake (Left of Throttle)
+    cv2.rectangle(frame, (550, 200), (570, 350), (30, 30, 30), -1) # Background
+    br_h = int(brake_val * 150)
+    cv2.rectangle(frame, (550, 350 - br_h), (570, 350), (0, 0, 255), -1)
+    cv2.putText(frame, "BRK", (545, 370), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+
+    # 4. Status Badges (Top Left)
+    status_y = 40
+    if lHand_pos and rHand_pos:
+        cv2.rectangle(frame, (20, status_y-25), (150, status_y+5), (0, 150, 0), -1)
+        cv2.putText(frame, "SYSTEM ACTIVE", (30, status_y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+    else:
+        cv2.rectangle(frame, (20, status_y-25), (150, status_y+5), (0, 0, 150), -1)
+        cv2.putText(frame, "HANDS LOST", (30, status_y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+    # Calibration Overlay
     if calib_timer > 0:
         remaining = calib_timer - time.time()
         if remaining <= 0:
@@ -129,19 +169,21 @@ while True:
                 angle_offset = raw_angle
                 print(f"CALIBRATED! Offset: {angle_offset:.2f}")
             else:
-                print("FAILED: No hands detected for calibration!")
+                print("FAILED: No hands detected!")
             calib_timer = 0
         else:
-            cv2.putText(frame, f"CALIBRATING IN: {int(remaining)+1}", (50, 50), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
+            # Full screen darken for calibration focus
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0,0), (640,480), (0,0,0), -1)
+            cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+            cv2.putText(frame, f"GET READY: {int(remaining)+1}", (180, 240), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 5)
 
-    # Status Overlay
-    color = (0, 255, 0) if (lHand_pos and rHand_pos) else (0, 0, 255)
-    cv2.putText(frame, f"Steer: {steering_val:.2f}", (50, 100), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
     if angle_offset is None:
-        cv2.putText(frame, "NOT CALIBRATED (Press 'C')", (50, 130), 
+        cv2.putText(frame, "PRESS 'C' TO CALIBRATE", (30, 80), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+
+    # --- END UI ---
 
 
     ini_frame = cv2.resize(frame, (320, 240))
