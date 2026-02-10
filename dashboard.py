@@ -1,7 +1,6 @@
 import cv2
 import mediapipe as mp
 import config
-import time
 
 class Dashboard:
     def __init__(self):

@@ -26,6 +26,7 @@ def main():
         ret, frame = capture.read()
         if not ret: break
 
+        # Mirror the image
         frame = cv2.flip(frame, 1)
         
         # 1. Process AI Hand tracking
